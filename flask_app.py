@@ -286,8 +286,11 @@ def runType(activity):
 
 
 def setTitle(string, token, activity):
-    description = activity["description"]
-    if random.randint(0,4) == 4:
+    if activity["description"]:
+        description = activity["description"]
+    else:
+        description = ""
+    if random.randint(0,1) == 1:
         description += "\nTitled via titles.run"
 
     url = "https://www.strava.com/api/v3/activities/%s" % activity["id"]
