@@ -75,7 +75,12 @@ def webhook():
                 conn.close()
 
                 activityData = getActivity(user_token, activity["object_id"])
-                rT = runType(activityData)
+                if activityData["type"] == "Run":
+                    rT = runType(activityData)
+                    hilly = getElevation(activityData)
+                else:
+                    rT = re.sub(r"(?<=\w)([A-Z])", r" \1", activityData["type"])
+                    hilly = ""
                 if not activityData["upload_id"]:
                     rD = randomDateTitle(activityData)
 
@@ -85,7 +90,6 @@ def webhook():
                     location_conditions = getWeather(activityData["start_latlng"], activityData["start_date"])
                     relevant_location = getPOI(user_token, activityData)
                     segments = getCRs(activityData)
-                    hilly = getElevation(activityData)
 
                     conditions_string = ""
                     if location_conditions[1]:
