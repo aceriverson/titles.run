@@ -9,7 +9,7 @@ import random
 import re
 import flexpolyline as fp
 
-app = Flask(__name__)
+app = Flask(__name__, static_url_path='')
 
 token = None
 users = {}
@@ -26,7 +26,7 @@ conn = mysql.connect()
 
 @app.route('/')
 def hello():
-    return redirect('/home')
+    return app.send_static_file('index.html')
 
 
 @app.route('/authorize', methods=['GET'])
@@ -53,7 +53,7 @@ def authorize():
         conn.commit()
         conn.close()
 
-        return 'Authorization granted, enjoy :)'
+        return redirect('/')
     except:
         return redirect("http://www.strava.com/oauth/authorize?client_id=%s&response_type=code&redirect_uri=%s/authorize&approval_prompt=force&scope=read,activity:read,activity:read_all,activity:write" % (SECRETS.client_id, SECRETS.url))
 
@@ -201,25 +201,28 @@ def getPOI(token, activity):
 
 
 def getWeather(latlng, timeOf):
-    point_info = requests.get("https://api.weather.gov/points/%s,%s" % (latlng[0], latlng[1]))
-    point_info = point_info.json()
-    stations = requests.get(point_info["properties"]["observationStations"])
-    stations = stations.json()
-    nearest_station = stations["features"][0]["properties"]["stationIdentifier"]
-
-    date_time_obj = datetime.datetime.strptime(timeOf, '%Y-%m-%dT%H:%M:%SZ')
-    date_time_obj += datetime.timedelta(hours=1)
-    timeFuture = date_time_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
-    weather_info = requests.get("https://api.weather.gov/stations/%s/observations?start=%s&end=%s" % (nearest_station, timeOf, timeFuture))
-    weather_info = weather_info.json()
     try:
-        conditions = re.findall("Rain|Snow|Wind", weather_info["features"][0]["properties"]["textDescription"])
-        return [point_info["properties"]["relativeLocation"]["properties"]["city"] + " ", conditions]
-    except:
+        point_info = requests.get("https://api.weather.gov/points/%s,%s" % (latlng[0], latlng[1]))
+        point_info = point_info.json()
+        stations = requests.get(point_info["properties"]["observationStations"])
+        stations = stations.json()
+        nearest_station = stations["features"][0]["properties"]["stationIdentifier"]
+
+        date_time_obj = datetime.datetime.strptime(timeOf, '%Y-%m-%dT%H:%M:%SZ')
+        date_time_obj += datetime.timedelta(hours=1)
+        timeFuture = date_time_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+        weather_info = requests.get("https://api.weather.gov/stations/%s/observations?start=%s&end=%s" % (nearest_station, timeOf, timeFuture))
+        weather_info = weather_info.json()
         try:
-            return [point_info["properties"]["relativeLocation"]["properties"]["city"] + " ", None]
+            conditions = re.findall("Rain|Snow|Wind", weather_info["features"][0]["properties"]["textDescription"])
+            return [point_info["properties"]["relativeLocation"]["properties"]["city"] + " ", conditions]
         except:
-            return None
+            try:
+                return [point_info["properties"]["relativeLocation"]["properties"]["city"] + " ", None]
+            except:
+                return [None, None]
+    except:
+        return [None, None]
 
 
 def randomDateTitle(activity):
@@ -287,17 +290,19 @@ def runType(activity):
 
 def setTitle(string, token, activity):
     if activity["description"]:
-        description = activity["description"]
+        description = activity["description"] + "\n"
     else:
         description = ""
     if random.randint(0,1) == 1:
-        description += "\nTitled via titles.run"
+        description += "Titled via titles.run"
 
     url = "https://www.strava.com/api/v3/activities/%s" % activity["id"]
     data = { "name": "%s" % string, "description": "%s" % description }
     headers = {'Authorization' : 'Bearer %s' % token}
 
     response = requests.put(url, headers=headers, data=data)
+
+    print(str(response.json()["id"]) + ', ' + response.json()["name"])
 
 
 @app.route('/trigger')
