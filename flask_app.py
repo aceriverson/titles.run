@@ -63,7 +63,7 @@ def webhook():
     if request.method == 'POST':
         activity = request.json
         if activity["aspect_type"] == 'create':
-            if refreshToken(activity["owner_id"]):
+            if refresh_token(activity["owner_id"]):
 
                 conn = mysql.connect()
                 cursor = conn.cursor()
@@ -74,22 +74,22 @@ def webhook():
                 cursor.close()
                 conn.close()
 
-                activityData = getActivity(user_token, activity["object_id"])
-                if activityData["type"] == "Run":
-                    rT = runType(activityData)
-                    hilly = getElevation(activityData)
+                activity_data = get_activity(user_token, activity["object_id"])
+                if activity_data["type"] == "Run":
+                    rT = run_type(activity_data)
+                    hilly = get_elevation(activity_data)
                 else:
-                    rT = re.sub(r"(?<=\w)([A-Z])", r" \1", activityData["type"])
+                    rT = re.sub(r"(?<=\w)([A-Z])", r" \1", activity_data["type"])
                     hilly = ""
-                if not activityData["upload_id"]:
-                    rD = randomDateTitle(activityData)
+                if not activity_data["upload_id"]:
+                    rD = random_date_title(activity_data)
 
-                    setTitle(rD + ' ' + rT, user_token, activityData)
+                    set_title(rD + ' ' + rT, user_token, activity_data)
                     return '', 200
                 else:
-                    location_conditions = getWeather(activityData["start_latlng"], activityData["start_date"])
-                    relevant_location = getPOI(user_token, activityData)
-                    segments = getCRs(activityData)
+                    location_conditions = get_weather(activity_data["start_latlng"], activity_data["start_date"])
+                    relevant_location = get_poi(user_token, activity_data)
+                    segments = get_crs(activity_data)
 
                     conditions_string = ""
                     if location_conditions[1]:
@@ -110,7 +110,7 @@ def webhook():
                     if segments != "":
                         title_string = conditions_string + segments + " Segment Hunt"
 
-                    setTitle(title_string, user_token, activityData)
+                    set_title(title_string, user_token, activity_data)
 
         return '', 200
 
@@ -128,7 +128,7 @@ def webhook():
             return "You aren't supposed to be here"
 
 
-def getActivity(token, activity):
+def get_activity(token, activity):
     print('getting activity')
     url = "https://www.strava.com/api/v3/activities/%s" % activity
     headers = {'Authorization' : 'Bearer %s' % token}
@@ -138,7 +138,7 @@ def getActivity(token, activity):
     return(response.json())
 
 
-def getCoordStream(token, activity):
+def get_coord_stream(token, activity):
     headers = {'Authorization' : 'Bearer %s' % token}
     url = "https://www.strava.com/api/v3/activities/%s/streams?keys=latlng&key_by_type=true" % activity
 
@@ -147,7 +147,7 @@ def getCoordStream(token, activity):
     return r.json()
 
 
-def getCRs(activity):
+def get_crs(activity):
     course_records = []
     for segment in activity["segment_efforts"]:
         try:
@@ -175,15 +175,15 @@ def getCRs(activity):
     return occurrences
 
 
-def getElevation(activity):
+def get_elevation(activity):
     if activity["total_elevation_gain"] / activity["distance"] >= 0.0125:
         return "Hilly "
     else:
         return ""
 
 
-def getPOI(token, activity):
-    coord_stream = getCoordStream(token, activity["id"])
+def get_poi(token, activity):
+    coord_stream = get_coord_stream(token, activity["id"])
     polyline = fp.encode(coord_stream["latlng"]["data"])
 
     r = requests.get("https://browse.search.hereapi.com/v1/browse?apiKey=%s&at=%s,%s&route=%s;w=1000&categories=350,550-5510-0359&limit=10" % (SECRETS.here_key, activity["start_latitude"], activity["start_longitude"], polyline))
@@ -200,7 +200,7 @@ def getPOI(token, activity):
     return relevant_location["name"]
 
 
-def getWeather(latlng, timeOf):
+def get_weather(latlng, timeOf):
     try:
         point_info = requests.get("https://api.weather.gov/points/%s,%s" % (latlng[0], latlng[1]))
         point_info = point_info.json()
@@ -210,8 +210,8 @@ def getWeather(latlng, timeOf):
 
         date_time_obj = datetime.datetime.strptime(timeOf, '%Y-%m-%dT%H:%M:%SZ')
         date_time_obj += datetime.timedelta(hours=1)
-        timeFuture = date_time_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
-        weather_info = requests.get("https://api.weather.gov/stations/%s/observations?start=%s&end=%s" % (nearest_station, timeOf, timeFuture))
+        time_future = date_time_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
+        weather_info = requests.get("https://api.weather.gov/stations/%s/observations?start=%s&end=%s" % (nearest_station, timeOf, time_future))
         weather_info = weather_info.json()
         try:
             conditions = re.findall("Rain|Snow|Wind", weather_info["features"][0]["properties"]["textDescription"])
@@ -225,19 +225,19 @@ def getWeather(latlng, timeOf):
         return [None, None]
 
 
-def randomDateTitle(activity):
+def random_date_title(activity):
     month = activity["start_date"][5:7]
     day = activity["start_date"][8:10]
 
     events = dates.dates["%s/%s/20" % (month, day)]
-    eventLength = len(events)
-    randomEvent = random.randint(0, eventLength - 1)
-    event = events[randomEvent]["title"]
+    event_length = len(events)
+    random_event = random.randint(0, event_length - 1)
+    event = events[random_event]["title"]
 
     return event
 
 
-def refreshToken(user_id):
+def refresh_token(user_id):
     conn = mysql.connect()
     sql = 'SELECT * FROM users WHERE id = %s'
     val = (user_id)
@@ -272,7 +272,7 @@ def refreshToken(user_id):
     return 1
 
 
-def runType(activity):
+def run_type(activity):
     mileage = activity["distance"] / 1600
     duration = activity["moving_time"] / 60
     pace = duration / mileage
@@ -288,7 +288,7 @@ def runType(activity):
         return 'Run'
 
 
-def setTitle(string, token, activity):
+def set_title(string, token, activity):
     if activity["description"]:
         description = activity["description"] + "\n"
     else:
@@ -307,7 +307,7 @@ def setTitle(string, token, activity):
 
 @app.route('/trigger')
 def trigger():
-    return getActivity('bb227c306cdd18e5ec515a1f6159e2bc60de7bb6', request.args["id"])
+    return get_activity('bb227c306cdd18e5ec515a1f6159e2bc60de7bb6', request.args["id"])
 
 
 if __name__ == '__main__':
