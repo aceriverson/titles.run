@@ -151,7 +151,7 @@ def get_crs(activity):
     course_records = []
     for segment in activity["segment_efforts"]:
         try:
-            if segment["achievements"][0]["type"] == "overall" and segment["achievements"][0]["rank"] <= 5:
+            if segment["achievements"][0]["type"] == "overall" and segment["achievements"][0]["rank"] <= 3:
                 course_records.append(segment["name"])
         except:
             continue
@@ -186,7 +186,7 @@ def get_poi(token, activity):
     coord_stream = get_coord_stream(token, activity["id"])
     polyline = fp.encode(coord_stream["latlng"]["data"])
 
-    r = requests.get("https://browse.search.hereapi.com/v1/browse?apiKey=%s&at=%s,%s&route=%s;w=1000&categories=350,550-5510-0359&limit=10" % (SECRETS.here_key, activity["start_latitude"], activity["start_longitude"], polyline))
+    r = requests.get("https://browse.search.hereapi.com/v1/browse?apiKey=%s&at=%s,%s&route=%s;w400&categories=350,550-5510-0359,800-8600-0193&limit=10" % (SECRETS.here_key, activity["start_latitude"], activity["start_longitude"], polyline))
     r = r.json()
     relevant_location = {"name": "", "references": 0}
     for location in r["items"]:
@@ -312,5 +312,3 @@ def trigger():
 
 if __name__ == '__main__':
     app.run()
-
-
