@@ -61,7 +61,9 @@ def authorize():
 @app.route('/webhook', methods=['POST', 'GET'])
 def webhook():
     if request.method == 'POST':
+        print(request)
         activity = request.json
+        print(activity)
         if activity["aspect_type"] == 'create':
             if refresh_token(activity["owner_id"]):
 
@@ -73,6 +75,8 @@ def webhook():
                 user_token = cursor.fetchone()[0]
                 cursor.close()
                 conn.close()
+
+                hilly = ""
 
                 activity_data = get_activity(user_token, activity["object_id"])
                 if activity_data["type"] == "Run":
@@ -97,6 +101,9 @@ def webhook():
                             conditions_string += (cond + "y ")
                     else:
                         conditions_string = hilly
+
+                    if type(conditions_string) != 'str':
+                        conditions_string = ""
 
                     title_string = ""
                     # If POI is found, conditions (rainy, snowy...) + run type + "at location"
@@ -129,7 +136,7 @@ def webhook():
 
 
 def get_activity(token, activity):
-    print('getting activity')
+    print('getting activity, %s' % activity)
     url = "https://www.strava.com/api/v3/activities/%s" % activity
     headers = {'Authorization' : 'Bearer %s' % token}
 
@@ -228,6 +235,12 @@ def get_weather(latlng, timeOf):
 def random_date_title(activity):
     month = activity["start_date"][5:7]
     day = activity["start_date"][8:10]
+
+    if int(month) < 10:
+        month = month[1]
+
+    if int(day) < 10:
+        day = day[1]
 
     events = dates.dates["%s/%s/20" % (month, day)]
     event_length = len(events)
