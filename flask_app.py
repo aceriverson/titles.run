@@ -1,4 +1,6 @@
-from flask import Flask, request, abort, Response, jsonify, redirect
+from flask import Flask, request, abort, Response, jsonify, redirect, session, send_file
+from flask_session import Session
+from tempfile import mkdtemp
 import requests
 import time
 import SECRETS
@@ -11,6 +13,13 @@ import flexpolyline as fp
 
 app = Flask(__name__, static_url_path='')
 
+# Configure session to use filesystem (instead of signed cookies)
+app.config["SESSION_FILE_DIR"] = mkdtemp()
+app.config["SESSION_PERMANENT"] = False
+app.config["SESSION_TYPE"] = "filesystem"
+Session(app)
+
+# Configure MySQL connection
 mysql = MySQL()
 app.config['MYSQL_DATABASE_USER'] = SECRETS.database_username
 app.config['MYSQL_DATABASE_PASSWORD'] = SECRETS.database_password
@@ -28,6 +37,7 @@ def hello():
 @app.route('/authorize', methods=['GET'])
 def authorize():
     try:
+        print('here')
         request.args["scope"]
 
         files = {
@@ -39,6 +49,16 @@ def authorize():
 
         response = requests.post('https://www.strava.com/oauth/token', files=files)
 
+        session["user_id"] = response.json()["athlete"]["id"]
+        print(f"{session['user_id']} {response.json()['athlete']['firstname']} has signed in")
+
+        url = "https://www.strava.com/api/v3/athlete"
+        headers = {'Authorization' : 'Bearer %s' % response.json()["access_token"]}
+
+        print('z')
+        user_data = requests.get(url, headers=headers)
+        user_data = user_data.json()
+
         conn = mysql.connect()
         sql = 'INSERT INTO users (id, token, refresh_token, expires) VALUES (%s, %s, %s, %s) ON DUPLICATE KEY UPDATE token = %s, refresh_token = %s, expires = %s'
         val = (response.json()["athlete"]["id"], response.json()["access_token"], response.json()["refresh_token"], response.json()["expires_at"], response.json()["access_token"], response.json()["refresh_token"], response.json()["expires_at"])
@@ -49,9 +69,111 @@ def authorize():
         conn.commit()
         conn.close()
 
+        print('a')
+
+        formatted_location = user_data['city'] if user_data['city'] else ""
+        if user_data['state']:
+            formatted_location = formatted_location + ", " + user_data['state'] if formatted_location else user_data['state']
+
+        sql = "UPDATE users SET user_name = %s, location = %s, full_name = %s WHERE id = %s AND user_name IS NULL;"
+        val = (user_data["username"], formatted_location, f"{user_data['firstname'] if user_data['firstname'] else ''} {user_data['lastname'] if user_data['lastname'] else ''}", response.json()["athlete"]["id"])
+
+        cnx = mysql.connect()
+        curs = cnx.cursor()
+        curs.execute(sql, val)
+        curs.close()
+        cnx.commit()
+        cnx.close()
+
+        print(user_data)
+
         return redirect('/')
     except:
+        session.clear()
         return redirect("http://www.strava.com/oauth/authorize?client_id=%s&response_type=code&redirect_uri=%s/authorize&approval_prompt=force&scope=read,activity:read,activity:read_all,activity:write" % (SECRETS.client_id, SECRETS.url))
+
+@app.route('/current_user', methods=['GET'])
+def current_user():
+    try:
+        user_info = get_user_info(session["user_id"])
+
+        url = "https://www.strava.com/api/v3/athlete"
+        headers = {'Authorization' : 'Bearer %s' % user_info[0]}
+
+        response = requests.get(url, headers=headers)
+        response = response.json()
+
+        try:
+            response["message"]
+            return {
+                    0: "",
+                    "success": "false"
+                    }
+        except:
+            user_info = list(user_info)
+            user_info[0] = "true"
+            return {0: response, 1: user_info, "success": "true"}
+
+    except:
+        return {
+                0: "",
+                "success": "false"
+                }
+
+
+@app.route('/settings', methods=['POST', 'GET'])
+def settings():
+    if request.method == 'POST':
+        print(request.form.to_dict())
+        try:
+            long_run = float(request.form["longRun"]) * 1609
+            print(long_run)
+        except:
+            long_run = None
+
+        try:
+            pace = request.form["pace"].split(":")
+            pace = int(pace[0]) + round(float(pace[1]) / 60, 2)
+            print(pace)
+        except:
+            pace = None
+
+        automatic = request.form.get('automatic', 0)
+        if automatic == "on":
+            automatic = 1
+
+        ses = session["user_id"]
+
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        sql = "UPDATE users SET long_run = '%s', workout_pace = '%s', automatic = '%s', user_name = %s, affiliation = %s, location = %s, bio = %s, full_name = %s, events = %s WHERE id = '%s';"
+        val = (long_run, pace, automatic, request.form.get('user_name'), request.form.get('affiliation'), request.form.get('location'), request.form.get('bio'), request.form.get('full_name'), request.form.get('dateEvents'), ses)
+        print(sql, val)
+        try:
+            cursor.execute(sql, val)
+            cursor.close()
+            conn.commit()
+            conn.close()
+        except:
+            cursor.close()
+            conn.commit()
+            conn.close()
+            return redirect('/settings?user_name=fail')
+
+        return redirect('/')
+
+    else:
+        try:
+            session["user_id"]
+            return app.send_static_file('settings.html')
+        except:
+            return redirect('/')
+
+
+@app.route('/signout', methods=['GET'])
+def signout():
+    session.clear()
+    return redirect("/")
 
 
 @app.route('/webhook', methods=['POST', 'GET'])
@@ -61,30 +183,63 @@ def webhook():
         try:
             # Determines if the webhook post is new, will also attempt to refresh the user token.
             if activity["aspect_type"] == "create" and refresh_token(activity["owner_id"]):
-                run_title(activity)
+                conn = mysql.connect()
+                cursor = conn.cursor()
+                sql = 'SELECT automatic FROM users WHERE id = %s'
+                val = (activity["owner_id"])
+                cursor.execute(sql, val)
+                automatic = cursor.fetchone()[0]
+                cursor.close()
+                conn.close()
 
-            # If user #title or #totd
-            if activity["aspect_type"] == "update" and refresh_token(activity["owner_id"]):
-                if "#title" in activity["updates"]["title"]:
-                    run_title(activity)
+                if automatic == 0:
+                    return '', 200
 
-                if "totd" in activity["updates"]["title"]:
+                if val == 30955978:
                     conn = mysql.connect()
                     cursor = conn.cursor()
                     sql = 'SELECT token FROM users WHERE id = %s'
-                    val = (activity["owner_id"])
-                    cursor.execute(sql, val)
-                    # User token will be used to access activity data
-                    user_token = cursor.fetchone()[0]
+                    # val = (activity["owner_id"])
+                    cursor.execute(sql, 30955978)
+                    token = cursor.fetchone()[0]
                     cursor.close()
                     conn.close()
 
-                    activity_data = get_activity(user_token, activity["object_id"])
+                    description = activity['description'] + '\n' + 'Titled via titles.run'
 
-                    event = random_date_title(activity_data)
-                    activity_type = get_type(activity_data)
+                    url = "https://www.strava.com/api/v3/activities/%s" % activity["id"]
+                    data = { "description": "%s" % description }
+                    headers = {'Authorization' : 'Bearer %s' % token}
 
-                    set_title(event + " " + activity_type, user_token, activity_data)
+                    response = requests.put(url, headers=headers, data=data)
+
+
+
+
+                run_title(activity)
+
+            # If user #title or #totd
+            # if activity["aspect_type"] == "update" and refresh_token(activity["owner_id"]):
+            #     if "#title" in activity["updates"]["title"]:
+            #         run_title(activity)
+
+            #     if "totd" in activity["updates"]["title"]:
+            #         conn = mysql.connect()
+            #         cursor = conn.cursor()
+            #         sql = 'SELECT token FROM users WHERE id = %s'
+            #         val = (activity["owner_id"])
+            #         cursor.execute(sql, val)
+            #         # User token will be used to access activity data
+            #         user_token = cursor.fetchone()[0]
+            #         cursor.close()
+            #         conn.close()
+
+            #         activity_data = get_activity(user_token, activity["object_id"])
+
+            #         event = random_date_title(activity_data)
+            #         activity_type = get_type(activity_data)
+
+            #         set_title(event + " " + activity_type, user_token, activity_data)
 
         except KeyError:
             return '', 400
@@ -101,6 +256,79 @@ def webhook():
                 return '{"hub.challenge": "%s"}' % response["hub.challenge"], 200
         except:
             return "You aren't supposed to be here"
+
+
+@app.route('/profile/<name>')
+def get_profile(name):
+
+    sql = "SELECT * FROM users WHERE user_name = %s"
+    val = (name)
+
+    conn = mysql.connect()
+    cursor = conn.cursor()
+    cursor.execute(sql, val)
+    user_data = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    refresh_token(user_data[0])
+
+    sql = "SELECT * FROM users WHERE user_name = %s"
+    val = (name)
+
+    conn = mysql.connect()
+    cursor = conn.cursor()
+    cursor.execute(sql, val)
+    user_data = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    url = "https://www.strava.com/api/v3/athlete"
+    headers = {'Authorization' : 'Bearer %s' % user_data[1]}
+
+    strava_data = requests.get(url, headers=headers)
+    strava_data = strava_data.json()
+
+    url = "https://www.strava.com/api/v3/athlete/activities?per_page=5"
+    headers = {'Authorization' : 'Bearer %s' % user_data[1]}
+
+    activities = requests.get(url, headers=headers)
+    activities = activities.json()
+
+
+    formatted_activities = []
+    for activity in activities:
+        print(activity)
+        url = "https://www.strava.com/api/v3/activities/%s" % activity["id"]
+        headers = {'Authorization' : 'Bearer %s' % user_data[1]}
+
+        activity_data = requests.get(url, headers=headers)
+        activity_data = activity_data.json()
+
+        formatted_activities.append({
+            "name": activity["name"],
+            "distance": round(activity["distance"] / 1609, 2),
+            "time": activity["moving_time"],
+            "description": activity_data["description"],
+            "polyline": "https://maps.googleapis.com/maps/api/staticmap?size=600x600&path=enc:%s&key=%s" % (activity_data["map"]["polyline"], SECRETS.google_places_key),
+            "start": activity_data["start_date_local"]
+        })
+
+    response = {
+        "profile_picture": strava_data["profile"],
+        "affiliation": user_data[8],
+        "location": user_data[10],
+        "bio": user_data[9],
+        "user_full_name": user_data[11],
+        "activities": formatted_activities
+    }
+
+    return response;
+
+
+@app.route('/<name>')
+def user_profile(name):
+  return app.send_static_file('profile.html')
 
 
 def run_title(activity):
@@ -189,7 +417,7 @@ def get_crs(activity):
             occurrences = [word]
             keyword_count = count
 
-    occurrences = "-".join(occurrences[0:3])
+    occurrences = " ".join(occurrences[0:3])
 
     return occurrences
 
@@ -227,10 +455,29 @@ def get_poi(token, activity):
     return relevant_location["name"]
 
 
+def get_user_info(id):
+    refresh_token(id)
+    try:
+        conn = mysql.connect()
+        cursor = conn.cursor()
+        sql = 'SELECT token, workout_pace, long_run, automatic, user_name, affiliation, bio, location, full_name FROM users WHERE id = %s;'
+        val = (id)
+        cursor.execute(sql, val)
+        # User token will be used to access activity data
+        user_info = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        return user_info
+
+    except:
+        return False
+
+
 # Takes location array, index 0 is a valid station id, plus time stamp. Returns weather condition (Rainy, Snowy, Windy) or None
 def get_weather(location, time_of):
     if location is None:
-        return None
+        return ""
 
     date_time_obj = datetime.datetime.strptime(time_of, '%Y-%m-%dT%H:%M:%SZ')
     date_time_obj += datetime.timedelta(hours=1)
@@ -251,23 +498,27 @@ def get_weather(location, time_of):
 
 # Takes activity data, returns array [(nearest station identifier), (city name)]
 def get_location(activity):
+    cities = []
+    for segment in activity["segment_efforts"]:
+        cities.append(segment["segment"]["city"])
+
+    try:
+        city = max(set(cities), key = cities.count)
+    except:
+        city = None
+
     try:
         point_info = requests.get("https://api.weather.gov/points/%s,%s" % (activity["start_latlng"][0], activity["start_latlng"][1]))
         point_info = point_info.json()
         stations = requests.get(point_info["properties"]["observationStations"])
         stations = stations.json()
         nearest_station = stations["features"][0]["properties"]["stationIdentifier"]
+        city = point_info["properties"]["relativeLocation"]["properties"]["city"] if city == None else city
 
-        return [nearest_station, point_info["properties"]["relativeLocation"]["properties"]["city"] + " "]
+        return [nearest_station, city + " "]
 
     except:
-        return [None, ""]
-
-        # date_time_obj = datetime.datetime.strptime(activity["start_date"], '%Y-%m-%dT%H:%M:%SZ')
-        # date_time_obj += datetime.timedelta(hours=1)
-        # time_future = date_time_obj.strftime("%Y-%m-%dT%H:%M:%SZ")
-        # weather_info = requests.get("https://api.weather.gov/stations/%s/observations?start=%s&end=%s" % (nearest_station, timeOf, time_future))
-        # weather_info = weather_info.json()
+        return [city, ""]
 
 
 # Takes activity data, returns random funny holiday
@@ -328,16 +579,25 @@ def refresh_token(user_id):
 # Takes activity, determines if it fits long run, workout, or run. Also returns formated activity type if not 'Run'
 def get_type(activity):
     if activity["type"] == "Run":
-        mileage = activity["distance"] / 1600
+        mileage = activity["distance"] / 1609
         duration = activity["moving_time"] / 60
         pace = duration / mileage
 
-        if pace <= 5.67:
-            if duration < 96:
+        conn = mysql.connect()
+        sql = 'SELECT * FROM users WHERE id = %s;'
+        val = (activity["athlete"]["id"])
+        cursor = conn.cursor()
+        cursor.execute(sql, val)
+        user = cursor.fetchone()
+        cursor.close()
+        conn.close()
+
+        if pace <= user[4]:
+            if activity["distance"] < user[5]:
                 return 'Workout'
             else:
                 return 'Long Workout'
-        elif duration >= 96:
+        elif activity["distance"] >= user[5]:
             return 'Long Run'
         else:
             return 'Run'
